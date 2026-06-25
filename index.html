@@ -89,6 +89,11 @@
     letter-spacing:.06em;color:var(--paper);
   }
   .row .meta{grid-column:1;font-size:11px;color:var(--mut);letter-spacing:.04em}
+  .row .tag{
+    display:inline-block;margin-left:8px;font-family:inherit;
+    font-size:10px;color:var(--accent);border:1px solid var(--accent);
+    border-radius:5px;padding:1px 6px;letter-spacing:.02em;vertical-align:middle;
+  }
   .row .nums{grid-column:2;text-align:right;font-variant-numeric:tabular-nums;
     font-family:ui-monospace,monospace;font-size:13px;line-height:1.5;color:var(--paper-dim)}
   .row .del{
@@ -133,7 +138,7 @@
   <div class="totals">
     <span class="t-label">張數</span>
     <span class="t-val count" id="vCount">0</span>
-    <span class="t-label">銷售額</span>
+    <span class="t-label">應稅銷售額</span>
     <span class="t-val sales" id="vSales">0</span>
     <span class="t-label">稅額</span>
     <span class="t-val tax" id="vTax">0</span>
@@ -175,16 +180,52 @@
     if(!/^[0-9A-Fa-f]{8}$/.test(salesH) || !/^[0-9A-Fa-f]{8}$/.test(totalH)) return null;
     const sales = parseInt(salesH,16);
     const total = parseInt(totalH,16);
-    const tax = total - sales;
     // valid invoice track looks like 2 letters + 8 digits
     if(!/^[A-Za-z]{2}\d{8}$/.test(track)) return null;
-    return { track, dateMG, sales, total, tax,
-             noTax: (sales === 0),       // 銷售額 00000000 → 未分離稅項
-             over500: (total - sales) > 500 };  // 稅額 > 500 → 不計入
+    return classify({ track, dateMG, sales, total });
   }
 
-  // a record counts toward the totals only if it has tax separated AND tax <= 500
-  const isCounted = i => !i.noTax && !i.over500;
+  // ---------- classification & taxable-sales derivation ----------
+  // Given raw {track,dateMG,sales,total}, decide the category and how much
+  // taxable sales / tax this invoice contributes.
+  //   S = sales (untaxed total printed), T = total (tax-incl), tax = T - S
+  // Categories:
+  //   noTax    : S = 0            → 商家未分離稅項，不計入、不算張數
+  //   allFree  : tax = 0 (T = S)  → 全免稅，不計入、不算張數
+  //   over500  : 實際 tax > 500    → 不計入、不算張數
+  //   taxable  : 全應稅 (|tax - S*5%| ≤ 2) → 應稅銷售額 = S
+  //   mixed    : 含免稅           → 應稅銷售額 = tax × 20 (由稅額反推)
+  // taxableSales/taxAmount are only meaningful when counted = true.
+  function classify(raw){
+    const sales = raw.sales, total = raw.total;
+    const tax = total - sales;
+    let category, taxableSales = 0, taxAmount = 0, counted = false;
+
+    if(sales === 0){
+      category = "noTax";
+    }else if(tax === 0){
+      category = "allFree";
+    }else if(tax > 500){
+      category = "over500";
+    }else{
+      const expectedTax = sales * 0.05;
+      if(Math.abs(tax - expectedTax) <= 2){
+        category = "taxable";
+        taxableSales = sales;          // 全應稅：用原始銷售額
+        taxAmount = tax;
+        counted = true;
+      }else{
+        category = "mixed";
+        taxableSales = Math.round(tax * 20);  // 由稅額反推應稅銷售額 (tax / 0.05)
+        taxAmount = tax;
+        counted = true;
+      }
+    }
+    return { track:raw.track, dateMG:raw.dateMG, sales, total, tax,
+             category, taxableSales, taxAmount, counted };
+  }
+
+  const isCounted = i => i.counted === true;
 
   function fmtDate(mg){
     if(!/^\d{7}$/.test(mg)) return "";
@@ -199,10 +240,8 @@
   try{
     const saved = JSON.parse(localStorage.getItem("inv_items")||"[]");
     if(Array.isArray(saved)){
-      items = saved.map(i=>({
-        ...i,
-        noTax: i.sales === 0,
-        over500: (i.total - i.sales) > 500
+      items = saved.map(i=>classify({
+        track:i.track, dateMG:i.dateMG, sales:i.sales, total:i.total
       }));
       items.forEach(i=>seen.add(i.track));
     }
@@ -214,11 +253,11 @@
 
   function render(){
     const counted = items.filter(isCounted);
-    const sumS = counted.reduce((a,i)=>a+i.sales,0);
-    const sumX = counted.reduce((a,i)=>a+i.tax,0);
-    $("vCount").textContent = items.length;
-    $("vSales").textContent = nf(sumS);
-    $("vTax").textContent   = nf(sumX);
+    const sumS = counted.reduce((a,i)=>a+i.taxableSales,0);
+    const sumX = counted.reduce((a,i)=>a+i.taxAmount,0);
+    $("vCount").textContent = counted.length;          // 張數：只數計入的
+    $("vSales").textContent = nf(sumS);                // 應稅銷售額加總
+    $("vTax").textContent   = nf(sumX);                // 稅額加總
 
     const skipped = items.length - counted.length;
     $("listMeta").textContent = skipped ? ("計入 "+counted.length+"／略過 "+skipped) : "";
@@ -230,24 +269,26 @@
       $("btnExport").disabled = true;
       return;
     }
+    const BADGE = { noTax:"無稅項分離", allFree:"全免稅", over500:"超過500" };
     ul.innerHTML = items.map((i,idx)=>{
       const del = '<button class="del" data-i="'+idx+'" aria-label="刪除">×</button>';
-      if(i.noTax){
+      if(!i.counted){
+        // flagged / not counted: show why
+        let meta = fmtDate(i.dateMG);
+        if(i.category==="over500")      meta += '　稅 '+nf(i.tax);
+        else if(i.category==="allFree") meta += '　銷 '+nf(i.sales);
+        else                            meta += '　總計 '+nf(i.total);
         return '<li class="row flagged">'
           +'<span class="track">'+i.track+'</span>'
-          +'<span class="meta">'+fmtDate(i.dateMG)+'　總計 '+nf(i.total)+'</span>'
-          +'<span class="badge">無稅項分離</span>'+del+'</li>';
+          +'<span class="meta">'+meta+'</span>'
+          +'<span class="badge">'+(BADGE[i.category]||"不計入")+'</span>'+del+'</li>';
       }
-      if(i.over500){
-        return '<li class="row flagged">'
-          +'<span class="track">'+i.track+'</span>'
-          +'<span class="meta">'+fmtDate(i.dateMG)+'　稅 '+nf(i.tax)+'</span>'
-          +'<span class="badge">超過500</span>'+del+'</li>';
-      }
+      // counted: taxable or mixed. show taxable sales + tax; mark mixed.
+      const tag = i.category==="mixed" ? '<span class="tag">含免稅</span>' : '';
       return '<li class="row">'
-        +'<span class="track">'+i.track+'</span>'
+        +'<span class="track">'+i.track+tag+'</span>'
         +'<span class="meta">'+fmtDate(i.dateMG)+'</span>'
-        +'<span class="nums">銷 '+nf(i.sales)+'　稅 '+nf(i.tax)+'</span>'+del+'</li>';
+        +'<span class="nums">應稅 '+nf(i.taxableSales)+'　稅 '+nf(i.taxAmount)+'</span>'+del+'</li>';
     }).join("");
     $("btnClear").disabled = false;
     $("btnExport").disabled = false;
@@ -280,9 +321,15 @@
     seen.add(rec.track);
     items.unshift(rec);
     persist(); render();
-    if(rec.noTax){ toast("無稅項分離，不計入","warn"); buzz([30,40,30]); }
-    else if(rec.over500){ toast("稅額超過500，不計入","warn"); buzz([30,40,30]); }
-    else{ toast("＋ 銷 "+nf(rec.sales)+"　稅 "+nf(rec.tax)); buzz(60); }
+    if(!rec.counted){
+      const msg = { noTax:"無稅項分離，不計入",
+                    allFree:"全免稅，不計入",
+                    over500:"稅額超過500，不計入" }[rec.category] || "不計入";
+      toast(msg,"warn"); buzz([30,40,30]);
+    }else{
+      const pre = rec.category==="mixed" ? "含免稅 ▸ " : "";
+      toast("＋ "+pre+"應稅 "+nf(rec.taxableSales)+"　稅 "+nf(rec.taxAmount)); buzz(60);
+    }
   }
 
   // ---------- camera ----------
@@ -443,13 +490,14 @@
   // ---------- export CSV (only counted invoices) ----------
   $("btnExport").addEventListener("click", ()=>{
     const counted = items.filter(isCounted);
-    const head = "發票號碼,日期,銷售額,稅額,總計額\n";
+    const head = "發票號碼,日期,應稅銷售額,稅額,總計額,類別\n";
     const body = counted.map(i=>[
-      i.track, fmtDate(i.dateMG), i.sales, i.tax, i.total
+      i.track, fmtDate(i.dateMG), i.taxableSales, i.taxAmount, i.total,
+      (i.category==="mixed" ? "含免稅" : "全應稅")
     ].join(",")).join("\n");
     const foot = "\n\n張數,"+counted.length
-      +"\n銷售額加總,"+counted.reduce((a,i)=>a+i.sales,0)
-      +"\n稅額加總,"+counted.reduce((a,i)=>a+i.tax,0);
+      +"\n應稅銷售額加總,"+counted.reduce((a,i)=>a+i.taxableSales,0)
+      +"\n稅額加總,"+counted.reduce((a,i)=>a+i.taxAmount,0);
     const blob = new Blob(["\ufeff"+head+body+foot],{type:"text/csv;charset=utf-8"});
     const a=document.createElement("a");
     a.href=URL.createObjectURL(blob);
