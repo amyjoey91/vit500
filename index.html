@@ -146,8 +146,10 @@
 
 <div class="bar">
   <button class="btn primary" id="btnCam">開啟相機</button>
-  <button class="btn" id="btnExport" disabled>匯出</button>
   <button class="btn ghost" id="btnClear" disabled>清空</button>
+</div>
+<div class="bar">
+  <button class="btn" id="btnExport" disabled>匯出</button>
 </div>
 
 <div class="list-head">
@@ -361,10 +363,19 @@
     qr = qr || new Html5Qrcode("reader",{verbose:false});
     try{
       await qr.start(
-        {facingMode:"environment"},
-        { fps:10,
-          qrbox: vw => { const m=Math.min(vw.width,vw.height); const s=Math.round(m*0.78); return {width:s,height:s}; },
+        // request a high-resolution rear camera with continuous autofocus.
+        // these advanced constraints raise the chance of resolving the small,
+        // densely-printed left invoice QR; unsupported keys are ignored.
+        { facingMode:{ ideal:"environment" },
+          width:{ ideal:1920 },
+          height:{ ideal:1080 },
+          focusMode:"continuous",
+          advanced:[ {focusMode:"continuous"} ]
+        },
+        { fps:24,                       // more decode attempts per second
+          qrbox: vw => { const m=Math.min(vw.width,vw.height); const s=Math.round(m*0.86); return {width:s,height:s}; },
           aspectRatio:1.0,
+          disableFlip:false,
           experimentalFeatures:{useBarCodeDetectorIfSupported:true}
         },
         decoded => onScan(decoded),
@@ -372,11 +383,25 @@
       );
       running=true; btnCam.disabled=false;
       btnCam.textContent="停止相機"; btnCam.classList.remove("primary");
+      applyZoom();   // gentle digital zoom so a small QR fills more of the frame
     }catch(err){
       btnCam.disabled=false; btnCam.textContent="開啟相機";
       showBlockedBanner('<b>相機啟動失敗</b>'+(err && err.message ? err.message : "請重試或重新整理頁面")+'');
       console.error(err);
     }
+  }
+
+  // apply a light digital zoom if the device/track supports it
+  function applyZoom(){
+    try{
+      const track = qr && qr.getRunningTrackCapabilities && qr.getRunningTrackCapabilities();
+      if(!track || !track.zoom) return;
+      const max = track.zoom.max || 1;
+      const target = Math.min(1.6, max);   // gentle: 1.6x or device max, whichever is lower
+      if(target > (track.zoom.min||1)){
+        qr.applyVideoConstraints({ advanced:[ {zoom:target} ] }).catch(()=>{});
+      }
+    }catch(e){}
   }
   async function stop(){
     if(qr && running){ try{ await qr.stop(); }catch(e){} }
