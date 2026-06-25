@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#0c1116">
-<title>發票掃描加總</title>
+<title>QRcode500以下加總</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
 <style>
   :root{
@@ -34,6 +34,8 @@
     padding:16px 18px;
     border-bottom:1px solid var(--line);
   }
+  .apptitle{font-size:16px;font-weight:600;color:var(--paper);letter-spacing:.02em}
+  .appcredit{font-size:11px;color:var(--mut);letter-spacing:.04em;margin:2px 0 12px}
   .totals{display:grid;grid-template-columns:auto 1fr;row-gap:6px;column-gap:14px;align-items:baseline}
   .t-label{color:var(--paper-dim);font-size:13px;letter-spacing:.04em}
   .t-val{
@@ -135,6 +137,8 @@
 <body>
 
 <header>
+  <div class="apptitle">QRcode500以下加總</div>
+  <div class="appcredit">明儒會計師事務所　2026.6.25</div>
   <div class="totals">
     <span class="t-label">張數</span>
     <span class="t-val count" id="vCount">0</span>
