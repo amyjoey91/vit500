@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0c1116">
+<title>發票掃描加總</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<style>
+  :root{
+    --ink:#11151a;        /* ground */
+    --panel:#191f26;
+    --line:#283139;
+    --paper:#e9edf1;      /* primary text */
+    --paper-dim:#9aa6b1;
+    --accent:#4a9eff;     /* single calm accent */
+    --warn:#c98a2e;       /* over-threshold / no-tax flag */
+    --mut:#6a7681;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%}
+  body{
+    background:var(--ink);
+    color:var(--paper);
+    font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+    display:flex;flex-direction:column;
+    min-height:100vh;min-height:100dvh;
+    padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+
+  /* ---- header: totals ---- */
+  header{
+    padding:16px 18px;
+    border-bottom:1px solid var(--line);
+  }
+  .totals{display:grid;grid-template-columns:auto 1fr;row-gap:6px;column-gap:14px;align-items:baseline}
+  .t-label{color:var(--paper-dim);font-size:13px;letter-spacing:.04em}
+  .t-val{
+    text-align:right;font-variant-numeric:tabular-nums;
+    font-family:"SFMono-Regular",ui-monospace,"Roboto Mono",monospace;
+    font-size:21px;font-weight:600;letter-spacing:-.01em;color:var(--paper);
+  }
+
+  /* ---- scanner stage ---- */
+  .stage{position:relative;background:#000;flex:0 0 auto}
+  #reader{width:100%}
+  #reader video{display:block;width:100%!important;height:auto!important;object-fit:cover}
+  /* hide html5-qrcode's default chrome, we draw our own */
+  #reader__dashboard_section_csr button,
+  #reader__dashboard_section_swaplink,
+  #reader img{display:none!important}
+  #reader__scan_region img{display:none!important}
+  #reader__dashboard{padding:0!important}
+  .scan-hint{
+    position:absolute;left:0;right:0;bottom:0;
+    padding:10px 14px;font-size:12px;color:var(--paper);
+    background:linear-gradient(transparent,rgba(0,0,0,.7));
+    text-align:center;letter-spacing:.05em;pointer-events:none;
+  }
+  .scan-hint b{color:var(--accent)}
+
+  /* ---- controls ---- */
+  .bar{display:flex;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line)}
+  .btn{
+    flex:1;border:1px solid var(--line);background:var(--panel);color:var(--paper);
+    font-size:14px;font-family:inherit;padding:11px 8px;border-radius:10px;
+    letter-spacing:.04em;cursor:pointer;transition:.15s;
+  }
+  .btn:active{transform:scale(.97)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#06121f;font-weight:600}
+  .btn:disabled{opacity:.4}
+  .btn.ghost{flex:0 0 auto;padding:11px 16px}
+
+  /* ---- list ---- */
+  .list-head{
+    display:flex;justify-content:flex-end;align-items:center;
+    padding:12px 18px 6px;font-size:12px;color:var(--mut);min-height:14px;
+  }
+  ul.rows{list-style:none;margin:0;padding:0 12px 24px;flex:1 1 auto;overflow:auto}
+  li.row{
+    background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    padding:11px 14px;margin:7px 0;display:grid;
+    grid-template-columns:1fr auto auto;gap:3px 12px;align-items:center;
+  }
+  .row .track{
+    grid-column:1;font-family:ui-monospace,monospace;font-size:14px;
+    letter-spacing:.06em;color:var(--paper);
+  }
+  .row .meta{grid-column:1;font-size:11px;color:var(--mut);letter-spacing:.04em}
+  .row .nums{grid-column:2;text-align:right;font-variant-numeric:tabular-nums;
+    font-family:ui-monospace,monospace;font-size:13px;line-height:1.5;color:var(--paper-dim)}
+  .row .del{
+    grid-column:3;grid-row:1/3;border:none;background:none;color:var(--mut);
+    font-size:20px;cursor:pointer;padding:4px 6px;line-height:1;
+  }
+  .row .del:active{color:var(--accent)}
+  .row.flagged{border-color:#4a3a1c;background:#1d1810}
+  .row.flagged .badge{
+    grid-column:2;grid-row:1/3;justify-self:end;align-self:center;
+    font-size:11px;color:var(--warn);border:1px solid #4a3a1c;
+    border-radius:6px;padding:3px 9px;letter-spacing:.02em;white-space:nowrap;
+  }
+  .empty{padding:48px 24px;text-align:center;color:var(--mut);font-size:13px;line-height:1.8}
+
+  .toast{
+    position:fixed;left:50%;transform:translateX(-50%);bottom:24px;
+    background:var(--paper);color:var(--ink);font-size:13px;font-weight:500;
+    padding:10px 18px;border-radius:8px;opacity:0;pointer-events:none;
+    transition:.2s;letter-spacing:.03em;z-index:30;
+  }
+  .toast.show{opacity:1}
+  .toast.warn{background:var(--warn);color:#1a1206}
+  .toast.dup{background:var(--mut);color:var(--paper)}
+
+  /* ---- blocked / context warning banner ---- */
+  .blocked{
+    margin:0;padding:14px 18px;
+    background:#241a10;border-bottom:1px solid #4a3a1c;
+    color:var(--paper);font-size:13px;line-height:1.7;letter-spacing:.02em;
+  }
+  .blocked b{display:block;color:var(--warn);font-size:14px;margin-bottom:5px;letter-spacing:.04em}
+  .blocked code{
+    background:#34281a;color:#ffe6c2;padding:1px 6px;border-radius:5px;
+    font-family:ui-monospace,monospace;font-size:12px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="totals">
+    <span class="t-label">張數</span>
+    <span class="t-val count" id="vCount">0</span>
+    <span class="t-label">銷售額</span>
+    <span class="t-val sales" id="vSales">0</span>
+    <span class="t-label">稅額</span>
+    <span class="t-val tax" id="vTax">0</span>
+  </div>
+</header>
+
+<div class="stage">
+  <div id="reader"></div>
+  <div class="scan-hint">對準發票左側 QR Code</div>
+</div>
+
+<div class="bar">
+  <button class="btn primary" id="btnCam">開啟相機</button>
+  <button class="btn" id="btnExport" disabled>匯出</button>
+  <button class="btn ghost" id="btnClear" disabled>清空</button>
+</div>
+
+<div class="list-head">
+  <span id="listMeta"></span>
+</div>
+<ul class="rows" id="rows">
+  <li class="empty">開啟相機，對準發票左側 QR Code 即自動加總。</li>
+</ul>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ---------- parse the left QR per 財政部 spec (fixed-width, first 77 chars) ----------
+  // 0-9 track(10) | 10-16 date(7) | 17-20 random(4) | 21-28 sales(8 hex) | 29-36 total(8 hex) ...
+  function parseLeftQR(text){
+    if(!text || text.length < 37) return null;
+    const track  = text.slice(0,10);
+    const dateMG = text.slice(10,17);          // 民國 YYYMMDD
+    const salesH = text.slice(21,29);
+    const totalH = text.slice(29,37);
+    if(!/^[0-9A-Fa-f]{8}$/.test(salesH) || !/^[0-9A-Fa-f]{8}$/.test(totalH)) return null;
+    const sales = parseInt(salesH,16);
+    const total = parseInt(totalH,16);
+    const tax = total - sales;
+    // valid invoice track looks like 2 letters + 8 digits
+    if(!/^[A-Za-z]{2}\d{8}$/.test(track)) return null;
+    return { track, dateMG, sales, total, tax,
+             noTax: (sales === 0),       // 銷售額 00000000 → 未分離稅項
+             over500: (total - sales) > 500 };  // 稅額 > 500 → 不計入
+  }
+
+  // a record counts toward the totals only if it has tax separated AND tax <= 500
+  const isCounted = i => !i.noTax && !i.over500;
+
+  function fmtDate(mg){
+    if(!/^\d{7}$/.test(mg)) return "";
+    return (parseInt(mg.slice(0,3),10)+1911)+"/"+mg.slice(3,5)+"/"+mg.slice(5,7);
+  }
+  const nf = n => n.toLocaleString("en-US");
+
+  // ---------- state ----------
+  let items = [];           // {track,dateMG,sales,total,tax,noTax}
+  const seen = new Set();   // track dedup
+
+  try{
+    const saved = JSON.parse(localStorage.getItem("inv_items")||"[]");
+    if(Array.isArray(saved)){
+      items = saved.map(i=>({
+        ...i,
+        noTax: i.sales === 0,
+        over500: (i.total - i.sales) > 500
+      }));
+      items.forEach(i=>seen.add(i.track));
+    }
+  }catch(e){}
+
+  const $ = id => document.getElementById(id);
+
+  function persist(){ try{ localStorage.setItem("inv_items", JSON.stringify(items)); }catch(e){} }
+
+  function render(){
+    const counted = items.filter(isCounted);
+    const sumS = counted.reduce((a,i)=>a+i.sales,0);
+    const sumX = counted.reduce((a,i)=>a+i.tax,0);
+    $("vCount").textContent = items.length;
+    $("vSales").textContent = nf(sumS);
+    $("vTax").textContent   = nf(sumX);
+
+    const skipped = items.length - counted.length;
+    $("listMeta").textContent = skipped ? ("計入 "+counted.length+"／略過 "+skipped) : "";
+
+    const ul = $("rows");
+    if(!items.length){
+      ul.innerHTML = '<li class="empty">開啟相機，對準發票左側 QR Code 即自動加總。</li>';
+      $("btnClear").disabled = true;
+      $("btnExport").disabled = true;
+      return;
+    }
+    ul.innerHTML = items.map((i,idx)=>{
+      const del = '<button class="del" data-i="'+idx+'" aria-label="刪除">×</button>';
+      if(i.noTax){
+        return '<li class="row flagged">'
+          +'<span class="track">'+i.track+'</span>'
+          +'<span class="meta">'+fmtDate(i.dateMG)+'　總計 '+nf(i.total)+'</span>'
+          +'<span class="badge">無稅項分離</span>'+del+'</li>';
+      }
+      if(i.over500){
+        return '<li class="row flagged">'
+          +'<span class="track">'+i.track+'</span>'
+          +'<span class="meta">'+fmtDate(i.dateMG)+'　稅 '+nf(i.tax)+'</span>'
+          +'<span class="badge">超過500</span>'+del+'</li>';
+      }
+      return '<li class="row">'
+        +'<span class="track">'+i.track+'</span>'
+        +'<span class="meta">'+fmtDate(i.dateMG)+'</span>'
+        +'<span class="nums">銷 '+nf(i.sales)+'　稅 '+nf(i.tax)+'</span>'+del+'</li>';
+    }).join("");
+    $("btnClear").disabled = false;
+    $("btnExport").disabled = false;
+  }
+
+  // delete (event delegation)
+  $("rows").addEventListener("click", e=>{
+    const b = e.target.closest(".del"); if(!b) return;
+    const idx = +b.dataset.i;
+    const removed = items.splice(idx,1)[0];
+    if(removed) seen.delete(removed.track);
+    persist(); render();
+  });
+
+  // ---------- toast ----------
+  let toastT;
+  function toast(msg, kind){
+    const el=$("toast"); el.textContent=msg;
+    el.className="toast show"+(kind?(" "+kind):"");
+    clearTimeout(toastT);
+    toastT=setTimeout(()=>el.className="toast",1400);
+  }
+  function buzz(ms){ if(navigator.vibrate) navigator.vibrate(ms); }
+
+  // ---------- handle a decoded code ----------
+  function onScan(text){
+    const rec = parseLeftQR(text);
+    if(!rec){ return; } // not a left invoice QR — ignore silently (could be right QR / other)
+    if(seen.has(rec.track)){ toast("重複發票，已略過","dup"); buzz(40); return; }
+    seen.add(rec.track);
+    items.unshift(rec);
+    persist(); render();
+    if(rec.noTax){ toast("無稅項分離，不計入","warn"); buzz([30,40,30]); }
+    else if(rec.over500){ toast("稅額超過500，不計入","warn"); buzz([30,40,30]); }
+    else{ toast("＋ 銷 "+nf(rec.sales)+"　稅 "+nf(rec.tax)); buzz(60); }
+  }
+
+  // ---------- camera ----------
+  let qr=null, running=false;
+  const btnCam=$("btnCam");
+
+  // Is this a secure context? Camera only works on https:// or localhost.
+  function isSecure(){
+    return window.isSecureContext === true
+      || location.protocol === "https:"
+      || location.hostname === "localhost"
+      || location.hostname === "127.0.0.1";
+  }
+
+  // Show a persistent banner explaining why the camera can't open.
+  function showBlockedBanner(msg){
+    let b = $("blocked");
+    if(!b){
+      b = document.createElement("div");
+      b.id = "blocked";
+      b.className = "blocked";
+      $("btnCam").closest(".bar").insertAdjacentElement("beforebegin", b);
+    }
+    b.innerHTML = msg;
+  }
+  function clearBlockedBanner(){ const b=$("blocked"); if(b) b.remove(); }
+
+  async function start(){
+    if(running){ await stop(); return; }
+
+    // 1) hard requirement: secure context
+    if(!isSecure()){
+      showBlockedBanner(
+        '<b>相機被瀏覽器封鎖</b>'+
+        '目前頁面用 <code>'+location.protocol+'</code> 開啟。'+
+        '瀏覽器規定相機只能在 <code>https://</code> 或 localhost 下使用，'+
+        '直接點檔案（file://）不會跳出權限詢問。'+
+        '請改用下方說明的方式上線後再開啟。'
+      );
+      toast("需在 https 下才能開相機","warn");
+      return;
+    }
+    // 2) API availability
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      showBlockedBanner('<b>此瀏覽器不支援相機 API</b>請改用 Chrome 或 Safari 最新版開啟。');
+      return;
+    }
+    if(typeof Html5Qrcode==="undefined"){ toast("掃描元件載入失敗，請檢查網路","warn"); return; }
+
+    // 3) explicitly trigger the OS/browser permission prompt first.
+    //    Calling getUserMedia from this button tap is what makes Android & iOS
+    //    show the "Allow camera?" dialog.
+    btnCam.textContent="要求權限…"; btnCam.disabled=true;
+    let stream;
+    try{
+      stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:"environment" } } });
+      // release immediately; html5-qrcode opens its own stream next.
+      stream.getTracks().forEach(t=>t.stop());
+    }catch(err){
+      btnCam.disabled=false; btnCam.textContent="開啟相機";
+      if(err && (err.name==="NotAllowedError" || err.name==="SecurityError")){
+        showBlockedBanner(
+          '<b>相機權限被拒絕</b>'+
+          '請到瀏覽器網址列左側的鎖頭圖示 →「權限／網站設定」→ 允許「相機」，再重新整理頁面。'+
+          ' iPhone 也可到「設定 → Safari → 相機」改為「詢問」或「允許」。'
+        );
+      }else if(err && err.name==="NotFoundError"){
+        showBlockedBanner('<b>找不到相機</b>此裝置沒有可用的相機鏡頭。');
+      }else{
+        showBlockedBanner('<b>無法開啟相機</b>'+(err && err.message ? err.message : "未知錯誤")+'');
+      }
+      return;
+    }
+
+    // 4) start scanning
+    clearBlockedBanner();
+    qr = qr || new Html5Qrcode("reader",{verbose:false});
+    try{
+      await qr.start(
+        {facingMode:"environment"},
+        { fps:10,
+          qrbox: vw => { const m=Math.min(vw.width,vw.height); const s=Math.round(m*0.78); return {width:s,height:s}; },
+          aspectRatio:1.0,
+          experimentalFeatures:{useBarCodeDetectorIfSupported:true}
+        },
+        decoded => onScan(decoded),
+        () => {}   // per-frame decode failure: ignore
+      );
+      running=true; btnCam.disabled=false;
+      btnCam.textContent="停止相機"; btnCam.classList.remove("primary");
+    }catch(err){
+      btnCam.disabled=false; btnCam.textContent="開啟相機";
+      showBlockedBanner('<b>相機啟動失敗</b>'+(err && err.message ? err.message : "請重試或重新整理頁面")+'');
+      console.error(err);
+    }
+  }
+  async function stop(){
+    if(qr && running){ try{ await qr.stop(); }catch(e){} }
+    running=false; btnCam.textContent="開啟相機"; btnCam.classList.add("primary");
+  }
+  btnCam.addEventListener("click", start);
+
+  // ---------- clear ----------
+  $("btnClear").addEventListener("click", ()=>{
+    if(!items.length) return;
+    if(confirm("清空所有已掃發票？")){ items=[]; seen.clear(); persist(); render(); }
+  });
+
+  // ---------- export CSV (only counted invoices) ----------
+  $("btnExport").addEventListener("click", ()=>{
+    const counted = items.filter(isCounted);
+    const head = "發票號碼,日期,銷售額,稅額,總計額\n";
+    const body = counted.map(i=>[
+      i.track, fmtDate(i.dateMG), i.sales, i.tax, i.total
+    ].join(",")).join("\n");
+    const foot = "\n\n張數,"+counted.length
+      +"\n銷售額加總,"+counted.reduce((a,i)=>a+i.sales,0)
+      +"\n稅額加總,"+counted.reduce((a,i)=>a+i.tax,0);
+    const blob = new Blob(["\ufeff"+head+body+foot],{type:"text/csv;charset=utf-8"});
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(blob);
+    a.download="invoices_"+new Date().toISOString().slice(0,10)+".csv";
+    a.click(); URL.revokeObjectURL(a.href);
+  });
+
+  render();
+
+  // On load: if the page isn't in a secure context, warn right away
+  // instead of waiting for the user to tap and get a silent failure.
+  if(!isSecure()){
+    showBlockedBanner(
+      '<b>請用網址（https）開啟，相機才能運作</b>'+
+      '目前是用 <code>'+location.protocol+'</code> 開啟檔案，'+
+      '瀏覽器不允許在這種情況下使用相機，也不會跳出權限詢問。'+
+      '掃描欄位以外的功能（手動檢視、匯出）仍可使用。'
+    );
+  }
+})();
+</script>
+</body>
+</html>
