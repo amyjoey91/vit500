@@ -333,49 +333,39 @@
     }
     if(typeof Html5Qrcode==="undefined"){ toast("掃描元件載入失敗，請檢查網路","warn"); return; }
 
-    // 3) start scanning. qr.start() itself triggers the OS/browser permission
-    //    prompt on first use, so we do NOT pre-acquire a stream (doing so and
-    //    releasing it can leave the camera briefly busy and make the real
-    //    start() fail on some devices — which is exactly what broke v2).
+    // 3) start scanning. qr.start() itself triggers the permission prompt on
+    //    first use, so we do NOT pre-acquire a stream.
     btnCam.textContent="開啟中…"; btnCam.disabled=true;
 
-    // 4) start scanning.
-    //    Both the camera *constraints* AND the scan *options* can cause
-    //    start() to throw on some devices (a function-form qrbox, high fps,
-    //    or unsupported constraint keys). v1 worked with very plain options,
-    //    so we walk a ladder from enhanced -> plain and stop at the first
-    //    combination that starts successfully.
+    // 4) Open the camera with the *plainest* config first — this is exactly
+    //    what v1 used and is the most compatible. A function-form qrbox or
+    //    high fps can make start() throw on some devices, so those are NOT
+    //    used to open the camera. Once the stream is live we enhance it
+    //    in-place via applyVideoConstraints, which cannot kill the stream.
     clearBlockedBanner();
-    qr = qr || new Html5Qrcode("reader",{verbose:false});
 
-    const enhancedScan = {
-      fps:24,
-      qrbox: vw => { const m=Math.min(vw.width,vw.height); const s=Math.round(m*0.86); return {width:s,height:s}; },
-      aspectRatio:1.0,
-      experimentalFeatures:{useBarCodeDetectorIfSupported:true}
-    };
-    const plainScan = {                         // closest to the working v1
-      fps:10,
-      experimentalFeatures:{useBarCodeDetectorIfSupported:true}
-    };
-    const enhancedCam = { facingMode:{ ideal:"environment" }, width:{ ideal:1920 }, height:{ ideal:1080 } };
-    const basicCam    = { facingMode:"environment" };
+    // helper: (re)create a fresh instance, clearing any leftover DOM/state
+    function freshQr(){
+      try{ if(qr){ qr.clear(); } }catch(_){}
+      const el = $("reader"); if(el) el.innerHTML = "";
+      qr = new Html5Qrcode("reader",{verbose:false});
+    }
 
-    // each attempt: [cameraConstraints, scanOptions]
-    const attempts = [
-      [enhancedCam, enhancedScan],
-      [basicCam,    enhancedScan],
-      [basicCam,    plainScan],     // v1-equivalent, maximally compatible
+    const plainScan = { fps:10, experimentalFeatures:{useBarCodeDetectorIfSupported:true} };
+    const camCandidates = [
+      { facingMode:"environment" },                 // v1-equivalent, most compatible
+      { facingMode:{ ideal:"environment" } },
+      true                                           // last resort: any camera
     ];
 
     let started=false, lastErr=null;
-    for(const [cam,scan] of attempts){
+    for(const cam of camCandidates){
       try{
-        await qr.start(cam, scan, decoded=>onScan(decoded), ()=>{});
+        freshQr();
+        await qr.start(cam, plainScan, decoded=>onScan(decoded), ()=>{});
         started=true; break;
       }catch(e){
-        lastErr=e; console.warn("start attempt failed, trying simpler config:", e);
-        // ensure a clean slate before the next attempt
+        lastErr=e; console.warn("start attempt failed:", e && (e.name||e));
         try{ await qr.stop(); }catch(_){}
       }
     }
@@ -383,8 +373,10 @@
     if(started){
       running=true; btnCam.disabled=false;
       btnCam.textContent="停止相機"; btnCam.classList.remove("primary");
-      applyFocus();  // continuous focus, best-effort, after the stream is live
-      applyZoom();   // gentle digital zoom, best-effort
+      // best-effort enhancements applied to the *running* stream (won't break it)
+      enhanceStream();
+      applyFocus();
+      applyZoom();
     }else{
       btnCam.disabled=false; btnCam.textContent="開啟相機";
       const name = lastErr && lastErr.name;
@@ -394,15 +386,25 @@
           '請到瀏覽器網址列左側的鎖頭圖示 →「權限／網站設定」→ 允許「相機」，再重新整理頁面。'+
           ' iPhone 也可到「設定 → Safari → 相機」改為「詢問」或「允許」。'
         );
-      }else if(name==="NotFoundError"){
-        showBlockedBanner('<b>找不到相機</b>此裝置沒有可用的相機鏡頭。');
+      }else if(name==="NotFoundError" || name==="OverconstrainedError"){
+        showBlockedBanner('<b>找不到相機</b>此裝置找不到符合條件的相機鏡頭。');
       }else if(name==="NotReadableError"){
-        showBlockedBanner('<b>相機被佔用</b>可能有其他 App 正在使用相機，請關閉後重試。');
+        showBlockedBanner('<b>相機被佔用</b>可能有其他 App 正在使用相機，請完全關閉相機類 App 後重試。');
       }else{
-        showBlockedBanner('<b>相機啟動失敗</b>'+(lastErr && lastErr.message ? lastErr.message : "請重試或重新整理頁面")+'');
+        showBlockedBanner('<b>相機啟動失敗</b>錯誤類型：<code>'+(name||"未知")+'</code>'
+          +(lastErr && lastErr.message ? '<br>'+lastErr.message : '')
+          +'<br>請把這行錯誤回報給開發者。');
       }
       console.error(lastErr);
     }
+  }
+
+  // upgrade resolution on the already-running stream; best-effort, safe
+  function enhanceStream(){
+    try{
+      qr && qr.applyVideoConstraints &&
+        qr.applyVideoConstraints({ width:{ ideal:1920 }, height:{ ideal:1080 } }).catch(()=>{});
+    }catch(e){}
   }
 
   // request continuous autofocus after start; ignored if unsupported
